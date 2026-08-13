@@ -1,0 +1,212 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>棋语 · 后台监控</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei",sans-serif;background:#f5f1ea;min-height:100vh;display:flex;align-items:center;justify-content:center;padding:24px}
+.card{background:#fff;border-radius:16px;box-shadow:0 4px 24px rgba(0,0,0,0.08);padding:32px;width:100%;max-width:420px}
+h1{font-size:20px;color:#3a2a1a;text-align:center;margin-bottom:4px;letter-spacing:1px}
+.sub{font-size:12px;color:#a09080;text-align:center;margin-bottom:24px}
+.status{display:flex;flex-direction:column;align-items:center;margin-bottom:24px}
+.dot{width:64px;height:64px;border-radius:50%;margin-bottom:12px;transition:all .4s}
+.dot.on{background:#7bc47f;box-shadow:0 0 24px rgba(123,196,127,0.5);animation:pulse 2s infinite}
+.dot.off{background:#e07a6f;box-shadow:0 0 16px rgba(224,122,111,0.35)}
+.dot.connecting{background:#e8b968;box-shadow:0 0 16px rgba(232,185,104,0.4);animation:pulse 1s infinite}
+@keyframes pulse{0%{transform:scale(1)}50%{transform:scale(1.06)}100%{transform:scale(1)}}
+.stat{font-size:18px;font-weight:600;color:#3a2a1a}
+.stat-sub{font-size:12px;color:#a09080;margin-top:2px}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:20px}
+.box{background:#faf7f2;border-radius:10px;padding:14px;text-align:center}
+.box-label{font-size:11px;color:#a09080;margin-bottom:6px;letter-spacing:1px}
+.box-value{font-size:20px;font-weight:700;color:#3a2a1a}
+.log{background:#1e2229;border-radius:10px;padding:12px;max-height:160px;overflow-y:auto;margin-bottom:20px}
+.log-title{font-size:11px;color:#8a95a5;margin-bottom:8px;letter-spacing:1px}
+.log-line{font-family:ui-monospace,Consolas,monospace;font-size:11px;color:#c8d0dc;padding:2px 0;line-height:1.5;word-break:break-all}
+.log-line .time{color:#6a7482;margin-right:6px}
+.log-line.ok{color:#7bc47f}
+.log-line.err{color:#e07a6f}
+.btn{width:100%;padding:12px;border:none;border-radius:10px;background:#8a6040;color:#fff;font-size:15px;font-weight:600;cursor:pointer}
+.btn:active{background:#6a4a2a}
+.btn.small{background:#e8e0d4;color:#5a4a3a;margin-top:8px}
+.foot{text-align:center;font-size:11px;color:#b0a898;margin-top:16px}
+.plist{background:#faf7f2;border-radius:10px;padding:12px;margin:12px 0 16px;max-height:240px;overflow-y:auto}
+.p-row{display:flex;align-items:center;gap:10px;padding:9px 6px;border-bottom:1px solid rgba(0,0,0,0.05)}
+.p-row:last-child{border-bottom:none}
+.p-rank{width:30px;text-align:center;font-size:15px;font-weight:700;color:#8a6040;flex-shrink:0}
+.p-name{flex:1;font-size:14px;color:#3a2a1a;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.p-record{font-size:12px;color:#a09080;flex-shrink:0}
+.p-rating{font-size:13px;color:#8a6040;font-weight:700;flex-shrink:0;width:44px;text-align:right}
+.p-empty{text-align:center;color:#a09080;font-size:13px;padding:16px 0}
+</style>
+</head>
+<body>
+<div class="card">
+  <h1>棋语 · 后台监控</h1>
+  <div class="sub" id="addr">wss://half-day-chess-server.onrender.com</div>
+
+  <div class="status">
+    <div class="dot off" id="dot"></div>
+    <div class="stat" id="statText">检测中…</div>
+    <div class="stat-sub" id="statSub">正在连接服务器</div>
+  </div>
+
+  <div class="grid">
+    <div class="box">
+      <div class="box-label">连接耗时</div>
+      <div class="box-value" id="latency">--</div>
+    </div>
+    <div class="box">
+      <div class="box-label">在线玩家</div>
+      <div class="box-value" id="players">--</div>
+    </div>
+  </div>
+
+  <button class="btn small" id="playersBtn">👥 查看在线人员</button>
+  <div class="plist" id="plist" style="display:none">
+    <div class="log-title">在线人员</div>
+    <div id="playerList"></div>
+  </div>
+
+  <div class="log">
+    <div class="log-title">实时日志</div>
+    <div id="logList"></div>
+  </div>
+
+  <button class="btn" id="checkBtn">重新检测</button>
+  <button class="btn small" id="autoBtn">自动检测：开</button>
+
+  <div class="foot">棋语 Qiyu · 本地监控面板</div>
+</div>
+
+<script>
+(function(){
+  'use strict';
+  var WS_URL = 'wss://half-day-chess-server.onrender.com';
+  var ws = null;
+  var auto = true;
+  var autoTimer = null;
+  var lastPlayers = null;
+
+  function el(id){ return document.getElementById(id); }
+
+  function log(msg, cls){
+    var list = el('logList');
+    var line = document.createElement('div');
+    line.className = 'log-line' + (cls ? ' ' + cls : '');
+    var d = new Date();
+    var t = (d.getHours()<10?'0':'')+d.getHours()+':'+(d.getMinutes()<10?'0':'')+d.getMinutes()+':'+(d.getSeconds()<10?'0':'')+d.getSeconds();
+    line.innerHTML = '<span class="time">'+t+'</span>'+msg;
+    list.appendChild(line);
+    while(list.children.length > 40) list.removeChild(list.firstChild);
+    list.scrollTop = list.scrollHeight;
+  }
+
+  function setStatus(state, text, sub){
+    var dot = el('dot');
+    dot.className = 'dot ' + state;
+    el('statText').textContent = text;
+    el('statSub').textContent = sub || '';
+  }
+
+  function connect(){
+    var t0 = Date.now();
+    setStatus('connecting', '连接中…', '正在建立 WebSocket 连接');
+    try { if (ws) ws.close(); } catch(e){}
+
+    try {
+      ws = new WebSocket(WS_URL);
+    } catch(e) {
+      setStatus('off', '连接失败', e.message);
+      log('创建连接失败: ' + e.message, 'err');
+      return;
+    }
+
+    ws.onopen = function(){
+      var ms = Date.now() - t0;
+      el('latency').textContent = ms + 'ms';
+      setStatus('on', '在线', 'WebSocket 已连接');
+      log('连接成功 (' + ms + 'ms)', 'ok');
+      // 请求排行榜，估算在线玩家
+      try { ws.send(JSON.stringify({type:'leaderboard'})); } catch(e){}
+    };
+
+    ws.onmessage = function(e){
+      var data;
+      try { data = JSON.parse(e.data); } catch(err){ return; }
+      if (!data || !data.type) return;
+
+      if (data.type === 'welcome') {
+        log('welcome · 玩家ID: ' + (data.playerId||'--'));
+      }
+      else if (data.type === 'leaderboard') {
+        var list = data.players || [];
+        var n = list.length;
+        el('players').textContent = n;
+        if (lastPlayers !== n) {
+          lastPlayers = n;
+          log('排行榜返回 · 玩家数: ' + n + (n ? ' (最多 ' + list[0].name + ' 胜' + list[0].wins + ')' : ''), 'ok');
+        }
+      }
+      else if (data.type === 'error') {
+        log('服务器: ' + (data.msg||'error'), 'err');
+      }
+      else {
+        log('收到消息: ' + data.type);
+      }
+    };
+
+    ws.onerror = function(){
+      setStatus('off', '离线', '连接错误');
+      log('连接错误', 'err');
+    };
+
+    ws.onclose = function(e){
+      ws = null;
+      setStatus('off', '离线', '连接已断开 (code: ' + e.code + ')');
+      log('连接断开 (code: ' + e.code + ')', 'err');
+    };
+  }
+
+  function check(){
+    if (auto) {
+      connect();
+    }
+  }
+
+  function scheduleAuto(){
+    if (autoTimer) clearInterval(autoTimer);
+    if (auto) {
+      autoTimer = setInterval(function(){
+        // 在线时轻量探测；离线时重连
+        if (!ws || ws.readyState !== WebSocket.OPEN) {
+          connect();
+        } else {
+          try { ws.send(JSON.stringify({type:'leaderboard'})); } catch(e){}
+        }
+      }, 15000);
+    }
+  }
+
+  el('checkBtn').addEventListener('click', function(){
+    connect();
+  });
+
+  el('autoBtn').addEventListener('click', function(){
+    auto = !auto;
+    el('autoBtn').textContent = '自动检测：' + (auto ? '开' : '关');
+    scheduleAuto();
+    if (auto) connect();
+    else { if (autoTimer) clearInterval(autoTimer); }
+  });
+
+  // 初始检测
+  log('启动监控面板');
+  connect();
+  scheduleAuto();
+})();
+</script>
+</body>
+</html>

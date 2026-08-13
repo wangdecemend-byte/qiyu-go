@@ -122,6 +122,18 @@ canvas{display:block;position:absolute;top:0;left:0}
 .info-label{color:#a09080;font-size:14px;letter-spacing:1px}
 .info-value{color:#3a2a1a;font-size:15px;font-weight:600}
 </style>
+<!-- ── KataGo 引擎（TF.js + 本地模型）── -->
+<script type="importmap">
+{
+  "imports": {
+    "@tensorflow/tfjs": "https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.22.0/+esm"
+  }
+}
+</script>
+<script type="module">
+import { initKataGo, pickMove, modelReady, getModelName } from './katago-bundle.mjs';
+window.KataEngine = { initKataGo: initKataGo, pickMove: pickMove, modelReady: modelReady, getModelName: getModelName };
+</script>
 <script>
 // ============================================================
 // 棋语 — Web 版
@@ -638,6 +650,9 @@ function drawTopBar(ctx, w, currentColor, moveCount, isOnline, myTurn) {
   ctx.fillStyle = '#c8a96e'; ctx.font = '14px sans-serif';
   ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
   var statusText = (currentColor==='B'?'⚫ 黑棋':'⚪ 白棋') + ' · 第' + moveCount + '手';
+  if (isAI) {
+    statusText += currentColor === aiColor ? '  🤖 AI思考…' : '  🤖人机对弈';
+  }
   if (isOnline) {
     if (!myTurn) statusText += '  等待对手…';
     var wsStat = WS.getStatus();
@@ -1243,7 +1258,7 @@ var invite_roomCode = '';
 var invite_statusText = '';
 var invite_statusColor = '#6a5a4a';
 
-function invite_reset() { invite_mode = 'local'; invite_roomCode = ''; invite_statusText = ''; }
+function invite_reset() { invite_mode = 'local'; invite_roomCode = ''; invite_statusText = ''; isAI = false; }
 
 function invite_rrect(ctx, x, y, w, h, r) {
   ctx.beginPath();
@@ -1305,45 +1320,70 @@ function invite_draw(ctx, w, h, theme) {
   ctx.font = 'bold 13px sans-serif';
   ctx.textAlign = 'center';
   ctx.fillText('— 选择模式 —', w / 2, secY);
-  var btnW = w - 80, btnH = 40, btnX = 40, btnGap = 10;
-
-  var b1Y = secY + 28;
-  ctx.fillStyle = invite_mode === 'local' ? '#8a6040' : '#e8e0d4';
-  invite_rrect(ctx, btnX, b1Y, btnW, btnH, 10); ctx.fill();
-  ctx.fillStyle = invite_mode === 'local' ? '#fff' : '#5a4a3a';
-  ctx.font = '15px sans-serif';
-  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-  ctx.fillText('👤 本地双人对弈', btnX + btnW / 2, b1Y + btnH / 2);
-
+  var btnW = w - 80, btnH = 36, btnX = 40, btnGap = 6;
   var wsOk = typeof WS !== 'undefined' && WS.isConnected();
-  var b2Y = b1Y + btnH + btnGap;
-  var isMatch = invite_mode === 'match';
-  ctx.fillStyle = isMatch ? '#8a6040' : (wsOk ? '#e8e0d4' : '#d0ccc4');
-  invite_rrect(ctx, btnX, b2Y, btnW, btnH, 10); ctx.fill();
-  ctx.fillStyle = isMatch ? '#fff' : (wsOk ? '#5a4a3a' : '#999');
-  ctx.fillText('🎲 随机匹配' + (wsOk ? '' : ' (离线)'), btnX + btnW / 2, b2Y + btnH / 2);
-  var b3Y = b2Y + btnH + btnGap;
-  var isCreate = invite_mode === 'create';
-  ctx.fillStyle = isCreate ? '#8a6040' : (wsOk ? '#e8e0d4' : '#d0ccc4');
-  invite_rrect(ctx, btnX, b3Y, btnW, btnH, 10); ctx.fill();
-  ctx.fillStyle = isCreate ? '#fff' : (wsOk ? '#5a4a3a' : '#999');
-  ctx.fillText('🏠 创建房间' + (wsOk ? '' : ' (离线)'), btnX + btnW / 2, b3Y + btnH / 2);
-  var b4Y = b3Y + btnH + btnGap;
-  var isJoin = invite_mode === 'join';
-  ctx.fillStyle = isJoin ? '#8a6040' : (wsOk ? '#e8e0d4' : '#d0ccc4');
-  invite_rrect(ctx, btnX, b4Y, btnW, btnH, 10); ctx.fill();
-  ctx.fillStyle = isJoin ? '#fff' : (wsOk ? '#5a4a3a' : '#999');
-  ctx.fillText('🔗 加入房间' + (wsOk ? '' : ' (离线)'), btnX + btnW / 2, b4Y + btnH / 2);
+  var modes = [
+    { key: 'local',  label: '👤 本地对弈',    on: '#8a6040', net: false },
+    { key: 'match',  label: '🎲 随机匹配',    on: '#8a6040', net: true },
+    { key: 'create', label: '🏠 创建房间',    on: '#8a6040', net: true },
+    { key: 'join',   label: '🔗 加入房间',    on: '#8a6040', net: true }
+  ];
+  for (var mi = 0; mi < modes.length; mi++) {
+    var m = modes[mi];
+    var my0 = secY + 22 + mi * (btnH + btnGap);
+    var active = invite_mode === m.key;
+    var disabled = m.net && !wsOk;
+    ctx.fillStyle = active ? m.on : (disabled ? '#d0ccc4' : '#e8e0d4');
+    invite_rrect(ctx, btnX, my0, btnW, btnH, 9); ctx.fill();
+    ctx.fillStyle = active ? '#fff' : (disabled ? '#999' : '#5a4a3a');
+    ctx.font = '14px sans-serif';
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillText(m.label + (disabled ? ' (离线)' : ''), btnX + btnW / 2, my0 + btnH / 2);
+  }
+  var lastBtnBottom = secY + 22 + 4 * (btnH + btnGap);
+
+  // ── AI 控制面板（本地对弈模式下显示：AI 开关 + 执子选择）──
+  if (invite_mode === 'local') {
+    var panelY = lastBtnBottom + 12;
+    ctx.fillStyle = '#5a4a3a'; ctx.font = 'bold 12px sans-serif';
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillText('— AI 对战 —', w / 2, panelY + 8);
+    var subGap = 8, subH = 30, subW = (btnW - subGap * 2) / 3;
+    var ax1 = btnX, ax2 = btnX + subW + subGap, ax3 = btnX + (subW + subGap) * 2;
+    var sy = panelY + 16;
+    // AI 开关
+    var aiOn = aiEnabled;
+    ctx.fillStyle = aiOn ? '#6a5a3a' : '#e8e0d4';
+    invite_rrect(ctx, ax1, sy, subW, subH, 8); ctx.fill();
+    ctx.fillStyle = aiOn ? '#fff' : '#5a4a3a';
+    ctx.font = '13px sans-serif';
+    ctx.fillText(aiOn ? 'AI: 开' : 'AI: 关', ax1 + subW / 2, sy + subH / 2);
+    // AI执黑
+    ctx.fillStyle = aiColor === 'B' ? '#2a2a2a' : '#e8e0d4';
+    invite_rrect(ctx, ax2, sy, subW, subH, 8); ctx.fill();
+    ctx.fillStyle = aiColor === 'B' ? '#fff' : '#5a4a3a';
+    ctx.fillText('⚫AI执黑', ax2 + subW / 2, sy + subH / 2);
+    // AI执白
+    ctx.fillStyle = aiColor === 'W' ? '#f2f2f2' : '#e8e0d4';
+    invite_rrect(ctx, ax3, sy, subW, subH, 8); ctx.fill();
+    if (aiColor === 'W') { ctx.strokeStyle = '#c0b8a8'; ctx.lineWidth = 1; invite_rrect(ctx, ax3, sy, subW, subH, 8); ctx.stroke(); }
+    ctx.fillStyle = aiColor === 'W' ? '#3a2a1a' : '#5a4a3a';
+    ctx.fillText('⚪AI执白', ax3 + subW / 2, sy + subH / 2);
+    if (aiEnabled) {
+      ctx.fillStyle = 'rgba(90,60,40,0.55)'; ctx.font = '11px sans-serif';
+      ctx.fillText('AI ' + (aiColor === 'B' ? '执黑先行' : '执白，你执黑先手'), w / 2, sy + subH + 16);
+    }
+  }
 
   if (invite_roomCode && (invite_mode === 'create' || invite_mode === 'join')) {
-    var ry = b4Y + btnH + 16;
+    var ry = lastBtnBottom + 12;
     ctx.fillStyle = '#121a2a'; invite_rrect(ctx, btnX, ry, btnW, 42, 8); ctx.fill();
     ctx.fillStyle = '#c8a96e'; ctx.font = 'bold 16px monospace';
     ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
     ctx.fillText('房间号: ' + invite_roomCode, btnX + btnW/2, ry + 16);
     if (invite_mode === 'create') { ctx.fillStyle = '#6a7a8a'; ctx.font = '11px sans-serif'; ctx.fillText('等待对手加入…', btnX + btnW/2, ry + 34); }
   } else if (invite_mode === 'match') {
-    var my = b4Y + btnH + 16;
+    var my = lastBtnBottom + 12;
     ctx.fillStyle = '#6a7a8a'; ctx.font = '12px sans-serif'; ctx.textAlign = 'center';
     ctx.fillText('🟡 正在匹配对手，请稍候…', btnX + btnW/2, my + 8);
   }
@@ -1363,22 +1403,51 @@ function invite_hitTest(mx, my, w, h) {
   if (mx >= 6 && mx <= 42 && my >= 8 && my <= 56) return 'back';
   var prevH = Math.min(120, h * 0.18), pY = 80;
   var secY = pY + prevH + 24;
-  var btnW = w - 80, btnH = 40, btnX = 40, btnGap = 10;
-  var b1Y = secY + 28;
-  if (mx >= btnX && mx <= btnX + btnW && my >= b1Y && my <= b1Y + btnH) return 'local';
-  var b2Y = b1Y + btnH + btnGap;
-  if (mx >= btnX && mx <= btnX + btnW && my >= b2Y && my <= b2Y + btnH) return 'match';
-  var b3Y = b2Y + btnH + btnGap;
-  if (mx >= btnX && mx <= btnX + btnW && my >= b3Y && my <= b3Y + btnH) return 'create';
-  var b4Y = b3Y + btnH + btnGap;
-  if (mx >= btnX && mx <= btnX + btnW && my >= b4Y && my <= b4Y + btnH) return 'join';
+  var btnW = w - 80, btnH = 36, btnX = 40, btnGap = 6;
+  var keys = ['local', 'match', 'create', 'join'];
+  for (var i = 0; i < keys.length; i++) {
+    var my0 = secY + 22 + i * (btnH + btnGap);
+    if (mx >= btnX && mx <= btnX + btnW && my >= my0 && my <= my0 + btnH) return keys[i];
+  }
+  var lastBtnBottom = secY + 22 + 4 * (btnH + btnGap);
+  if (invite_mode === 'local') {
+    var panelY = lastBtnBottom + 12, subGap = 8, subH = 30, subW = (btnW - subGap * 2) / 3;
+    var sy = panelY + 16;
+    if (my >= sy && my <= sy + subH) {
+      if (mx >= btnX && mx <= btnX + subW) return 'ai_toggle';
+      if (mx >= btnX + subW + subGap && mx <= btnX + (subW + subGap) * 2 - subGap) return 'ai_black';
+      if (mx >= btnX + (subW + subGap) * 2 && mx <= btnX + btnW) return 'ai_white';
+    }
+  }
   var startY = h - 90;
   if (mx >= 20 && mx <= w - 20 && my >= startY && my <= startY + 50) return 'start';
   return null;
 }
 
 function invite_handleTouch(hit, onReady) {
-  if (hit === 'local') { invite_mode = 'local'; invite_roomCode = ''; invite_statusText = ''; network_reset(); isOnline = false; return true; }
+  if (hit === 'ai_toggle') {
+    if (typeof window.KataEngine === 'undefined' || !window.KataEngine.modelReady()) {
+      showToast('🤖 KataGo 引擎加载中，请稍候…', 2000);
+      return true;
+    }
+    aiEnabled = !aiEnabled;
+    return true;
+  }
+  if (hit === 'ai_black') {
+    if (typeof window.KataEngine === 'undefined' || !window.KataEngine.modelReady()) {
+      showToast('🤖 KataGo 引擎加载中，请稍候…', 2000);
+      return true;
+    }
+    aiEnabled = true; aiColor = 'B'; showToast('KataGo 执黑先行，你执白', 1200); return true;
+  }
+  if (hit === 'ai_white') {
+    if (typeof window.KataEngine === 'undefined' || !window.KataEngine.modelReady()) {
+      showToast('🤖 KataGo 引擎加载中，请稍候…', 2000);
+      return true;
+    }
+    aiEnabled = true; aiColor = 'W'; showToast('KataGo 执白，你执黑先行', 1200); return true;
+  }
+  if (hit === 'local') { invite_mode = 'local'; invite_roomCode = ''; invite_statusText = ''; network_reset(); isOnline = false; isAI = false; return true; }
   if (hit === 'match') {
     if (typeof WS === 'undefined' || !WS.isConnected()) { showToast('未连接到服务器，请稍候重试', 2000); return true; }
     invite_mode = 'match'; invite_roomCode = ''; WS.match();
@@ -1400,7 +1469,7 @@ function invite_handleTouch(hit, onReady) {
     showToast('正在加入房间 ' + code + '…', 2000); return true;
   }
   if (hit === 'start') {
-    if (invite_mode === 'local') { onReady({ online: false }); return false; }
+    if (invite_mode === 'local') { isAI = aiEnabled; onReady({ online: false }); return false; }
     if (invite_mode === 'match') { showToast('正在匹配对手，请稍候…', 2000); return true; }
     if (invite_mode === 'create') { showToast('等待对手加入房间…', 2000); return true; }
     if (invite_mode === 'join') { showToast('等待加入房间…', 2000); return true; }
@@ -2230,6 +2299,10 @@ var koPoint = null;
 var gameResult = null;
 var countingRequested = false;
 var pendingMove = null;       // 待确认落子 {x, y}
+var isAI = false;             // 当前对局是否人机对战
+var aiEnabled = false;        // AI 开关（对局选择界面配置）
+var aiColor = 'W';            // AI 执子颜色（'B'黑 / 'W'白），默认 AI 执白玩家执黑先手
+var aiTurnTimer = null;       // AI 思考定时器
 
 // 棋盘坐标 → 字母数字（如 A1、K10）。列用棋盘坐标（跳过 I），行自上而下 1-19
 function boardCoord(x, y) {
@@ -2299,6 +2372,7 @@ function init() {
   history_setScreenH(H);
   STATE = 'SPLASH';
   loop();
+  initKataGoAI(); // 异步初始化 KataGo 引擎
 }
 
 // ── 登录/注册按钮事件 ──
@@ -2394,14 +2468,21 @@ function enterDesign(){ STATE = 'DESIGN'; }
 function enterGame()  {
   theme = getTheme();
   if (isOnline) { stoneMap.clear(); moves = []; currentIdx = -1; currentColor = 'B'; }
+  else if (isAI) { stoneMap.clear(); moves = []; currentIdx = -1; currentColor = 'B'; }
   else if (!restoreGame()) { stoneMap.clear(); moves = []; currentIdx = -1; currentColor = 'B'; }
   isOnline = network_isOnline();
-  myTurn   = isOnline ? (network_myColor() === 'B') : true;
+  isAI = isAI && !isOnline;   // AI 仅限本地对局
+  myTurn = isOnline ? (network_myColor() === 'B') : (isAI ? (aiColor !== 'B') : true);
   koPoint = null;
   gameResult = null;
   countingRequested = false;
   pendingMove = null;
+  if (aiTurnTimer) { clearTimeout(aiTurnTimer); aiTurnTimer = null; }
   STATE = 'GAME';
+  // AI 先手时自动落子（仅 KataGo）
+  if (isAI && currentColor === aiColor) {
+    aiTurnTimer = setTimeout(kataGoThink, 800);
+  }
 }
 
 function handleMenuTouch(mx, my) {
@@ -2527,6 +2608,7 @@ function handleGameTouch(mx, my) {
   else if (hit === 'sync')   doSyncGame();
   else if (hit === 'board') {
     if (isOnline && !myTurn) return;
+    if (isAI && currentColor === aiColor) return; // AI 回合禁止玩家落子
     var pos = pixelToBoard(mx, my, layout);
     if (pos) requestPlace(pos.x, pos.y);
   }
@@ -2534,6 +2616,7 @@ function handleGameTouch(mx, my) {
 
 // ── 落子确认流程 ──
 function requestPlace(x, y) {
+  if (isAI && currentColor === aiColor) return; // AI 回合禁止玩家落子
   // 预检：该位置是否合法落子（占用/劫/禁着点）
   var k = x + ',' + y;
   if (stoneMap.has(k)) { showToast('该位置已有棋子', 1200); return; }
@@ -2586,6 +2669,7 @@ function doPlace(x, y) {
     else                 playWhite();
     if (isOnline) { network_syncMove(x, y, r.color); myTurn = false; }
     if (isDoublePass(moves)) doEndGame();
+    checkAITurn();  // 若轮到 AI 则自动下
   } else if (r.reason === 'ko') {
     showToast('打劫！不能立刻回提', 1500);
   } else if (r.reason === 'suicide') {
@@ -2603,6 +2687,75 @@ function doPass() {
     saveGame();
     if (isOnline && typeof WS !== 'undefined') { WS.sendPass(); myTurn = false; }
     if (isDoublePass(moves)) doEndGame();
+    checkAITurn();  // 玩家 Pass 后若轮到 AI 则自动下
+  }
+}
+
+// ── 本地贪心 AI ──
+// 落子后检查是否轮到 AI
+function checkAITurn() {
+  if (!isAI || isOnline || STATE !== 'GAME' || gameResult) return;
+  if (currentColor !== aiColor) return;
+  if (aiTurnTimer) clearTimeout(aiTurnTimer);
+  aiTurnTimer = setTimeout(kataGoThink, 700);
+}
+
+// ── KataGo AI ──
+var kataGoInitializing = false;
+
+// 页面加载时异步初始化 KataGo 引擎（下载模型 + 构建神经网络）
+function initKataGoAI() {
+  if (kataGoInitializing) return;
+  if (typeof window.KataEngine === 'undefined') return;
+  kataGoInitializing = true;
+  fetch('./katago-small.bin.gz')
+    .then(function(res) { if (!res.ok) throw new Error('模型下载失败 ' + res.status); return res.arrayBuffer(); })
+    .then(function(buf) { return window.KataEngine.initKataGo(new Uint8Array(buf)); })
+    .then(function() {
+      showToast('🤖 KataGo 已就绪 (' + window.KataEngine.getModelName().slice(0, 20) + ')', 2500);
+      console.log('KataGo ready');
+    })
+    .catch(function(e) { console.log('KataGo 初始化失败: ' + e.message); })
+    .finally(function() { kataGoInitializing = false; });
+}
+
+// KataGo 回合：收集合法点 → 引擎选点 → 落子
+async function kataGoThink() {
+  aiTurnTimer = null;
+  if (!isAI || STATE !== 'GAME' || gameResult) return;
+  if (currentColor !== aiColor) return;
+
+  // KataGo 未就绪 → 等待模型加载后重试
+  if (typeof window.KataEngine === 'undefined' || !window.KataEngine.modelReady()) {
+    showToast('🤖 KataGo 引擎加载中…', 1500);
+    aiTurnTimer = setTimeout(kataGoThink, 2000);
+    return;
+  }
+
+  // 收集合法点（用现有 placeStone 校验）
+  var legal = [];
+  for (var x = 0; x < SZ; x++) {
+    for (var y = 0; y < SZ; y++) {
+      if (stoneMap.has(x + ',' + y)) continue;
+      var testMap = new Map(stoneMap);
+      var testMoves = moves.slice();
+      var r = placeStone(x, y, testMap, testMoves, currentIdx, koPoint);
+      if (r.success) legal.push({ x: x, y: y });
+    }
+  }
+  if (!legal.length) { doPass(); return; }
+
+  showToast('🤖 KataGo 思考中…', 2000);
+  try {
+    var mv = await window.KataEngine.pickMove(stoneMap, moves, currentColor, legal, 7.5, false);
+    if (mv && STATE === 'GAME' && !gameResult && currentColor === aiColor) {
+      showToast('🤖 KataGo 落子 ' + boardCoord(mv.x, mv.y), 900);
+      doPlace(mv.x, mv.y);
+    }
+  } catch (e) {
+    console.log('KataGo 走棋失败: ' + e.message);
+    showToast('🤖 KataGo 出错，请稍候…', 1500);
+    aiTurnTimer = setTimeout(kataGoThink, 1500); // 出错后重试
   }
 }
 
@@ -2745,6 +2898,8 @@ function endGameCleanup() {
   if (network_isOnline()) network_endGame();
   network_reset();
   isOnline = false; myTurn = true;
+  isAI = false;
+  if (aiTurnTimer) { clearTimeout(aiTurnTimer); aiTurnTimer = null; }
   gameResult = null; koPoint = null; countingRequested = false;
   pendingMove = null;
   var mvModal = document.getElementById('moveModal');

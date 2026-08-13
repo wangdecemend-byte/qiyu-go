@@ -122,18 +122,8 @@ canvas{display:block;position:absolute;top:0;left:0}
 .info-label{color:#a09080;font-size:14px;letter-spacing:1px}
 .info-value{color:#3a2a1a;font-size:15px;font-weight:600}
 </style>
-<!-- ── KataGo 引擎（TF.js + 本地模型）── -->
-<script type="importmap">
-{
-  "imports": {
-    "@tensorflow/tfjs": "https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.22.0/+esm"
-  }
-}
-</script>
-<script type="module">
-import { initKataGo, pickMove, modelReady, getModelName } from './katago-bundle.mjs';
-window.KataEngine = { initKataGo: initKataGo, pickMove: pickMove, modelReady: modelReady, getModelName: getModelName };
-</script>
+<!-- ── KataGo 引擎（含 TF.js，本地打包，无 CDN 依赖）── -->
+<script src="katago-bundle-full.js"></script>
 <script>
 // ============================================================
 // 棋语 — Web 版
@@ -1342,15 +1332,15 @@ function invite_draw(ctx, w, h, theme) {
   }
   var lastBtnBottom = secY + 22 + 4 * (btnH + btnGap);
 
-  // ── AI 控制面板（本地对弈模式下显示：AI 开关 + 执子选择）──
+  // ── AI 控制面板（本地对弈模式下显示：AI 开关 + 执子 + 难度）──
   if (invite_mode === 'local') {
     var panelY = lastBtnBottom + 12;
     ctx.fillStyle = '#5a4a3a'; ctx.font = 'bold 12px sans-serif';
     ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-    ctx.fillText('— AI 对战 —', w / 2, panelY + 8);
-    var subGap = 8, subH = 30, subW = (btnW - subGap * 2) / 3;
+    ctx.fillText('— AI 对战 —', w / 2, panelY + 6);
+    var subGap = 8, subH = 28, subW = (btnW - subGap * 2) / 3;
     var ax1 = btnX, ax2 = btnX + subW + subGap, ax3 = btnX + (subW + subGap) * 2;
-    var sy = panelY + 16;
+    var sy = panelY + 12;
     // AI 开关
     var aiOn = aiEnabled;
     ctx.fillStyle = aiOn ? '#6a5a3a' : '#e8e0d4';
@@ -1369,10 +1359,22 @@ function invite_draw(ctx, w, h, theme) {
     if (aiColor === 'W') { ctx.strokeStyle = '#c0b8a8'; ctx.lineWidth = 1; invite_rrect(ctx, ax3, sy, subW, subH, 8); ctx.stroke(); }
     ctx.fillStyle = aiColor === 'W' ? '#3a2a1a' : '#5a4a3a';
     ctx.fillText('⚪AI执白', ax3 + subW / 2, sy + subH / 2);
-    if (aiEnabled) {
-      ctx.fillStyle = 'rgba(90,60,40,0.55)'; ctx.font = '11px sans-serif';
-      ctx.fillText('AI ' + (aiColor === 'B' ? '执黑先行' : '执白，你执黑先手'), w / 2, sy + subH + 16);
+
+    // ── 难度选择 ──
+    var diffLabels = ['入门', '简单', '普通', '困难', '高手'];
+    var dGap = 6, dH = 22, dW = (btnW - 4 * dGap) / 5;
+    var dy = sy + subH + 8;
+    for (var di = 0; di < 5; di++) {
+      var dx = btnX + di * (dW + dGap);
+      var active = aiDifficulty === (di + 1);
+      ctx.fillStyle = active ? '#8a6040' : '#e8e0d4';
+      invite_rrect(ctx, dx, dy, dW, dH, 6); ctx.fill();
+      ctx.fillStyle = active ? '#fff' : '#5a4a3a';
+      ctx.font = '12px sans-serif';
+      ctx.fillText(diffLabels[di], dx + dW / 2, dy + dH / 2);
     }
+    ctx.fillStyle = 'rgba(90,60,40,0.55)'; ctx.font = '10px sans-serif';
+    ctx.fillText('难度：' + diffLabels[(aiDifficulty || 3) - 1], w / 2, dy + dH + 11);
   }
 
   if (invite_roomCode && (invite_mode === 'create' || invite_mode === 'join')) {
@@ -1411,12 +1413,20 @@ function invite_hitTest(mx, my, w, h) {
   }
   var lastBtnBottom = secY + 22 + 4 * (btnH + btnGap);
   if (invite_mode === 'local') {
-    var panelY = lastBtnBottom + 12, subGap = 8, subH = 30, subW = (btnW - subGap * 2) / 3;
-    var sy = panelY + 16;
+    var panelY = lastBtnBottom + 12, subGap = 8, subH = 28, subW = (btnW - subGap * 2) / 3;
+    var sy = panelY + 12;
     if (my >= sy && my <= sy + subH) {
       if (mx >= btnX && mx <= btnX + subW) return 'ai_toggle';
       if (mx >= btnX + subW + subGap && mx <= btnX + (subW + subGap) * 2 - subGap) return 'ai_black';
       if (mx >= btnX + (subW + subGap) * 2 && mx <= btnX + btnW) return 'ai_white';
+    }
+    var dGap = 6, dH = 22, dW = (btnW - 4 * dGap) / 5;
+    var dy = sy + subH + 8;
+    if (my >= dy && my <= dy + dH) {
+      for (var di = 0; di < 5; di++) {
+        var dx = btnX + di * (dW + dGap);
+        if (mx >= dx && mx <= dx + dW) return 'difficulty_' + (di + 1);
+      }
     }
   }
   var startY = h - 90;
@@ -1425,6 +1435,12 @@ function invite_hitTest(mx, my, w, h) {
 }
 
 function invite_handleTouch(hit, onReady) {
+  if (hit && hit.indexOf('difficulty_') === 0) {
+    aiDifficulty = parseInt(hit.split('_')[1], 10);
+    var diffNames = ['入门', '简单', '普通', '困难', '高手'];
+    showToast('KataGo 难度：' + diffNames[aiDifficulty - 1], 1200);
+    return true;
+  }
   if (hit === 'ai_toggle') {
     if (typeof window.KataEngine === 'undefined' || !window.KataEngine.modelReady()) {
       showToast('🤖 KataGo 引擎加载中，请稍候…', 2000);
@@ -2302,6 +2318,7 @@ var pendingMove = null;       // 待确认落子 {x, y}
 var isAI = false;             // 当前对局是否人机对战
 var aiEnabled = false;        // AI 开关（对局选择界面配置）
 var aiColor = 'W';            // AI 执子颜色（'B'黑 / 'W'白），默认 AI 执白玩家执黑先手
+var aiDifficulty = 3;         // 难度 1入门 2简单 3普通 4困难 5高手
 var aiTurnTimer = null;       // AI 思考定时器
 
 // 棋盘坐标 → 字母数字（如 A1、K10）。列用棋盘坐标（跳过 I），行自上而下 1-19
@@ -2747,7 +2764,7 @@ async function kataGoThink() {
 
   showToast('🤖 KataGo 思考中…', 2000);
   try {
-    var mv = await window.KataEngine.pickMove(stoneMap, moves, currentColor, legal, 7.5, false);
+    var mv = await kataGoPick(legal);
     if (mv && STATE === 'GAME' && !gameResult && currentColor === aiColor) {
       showToast('🤖 KataGo 落子 ' + boardCoord(mv.x, mv.y), 900);
       doPlace(mv.x, mv.y);
@@ -2757,6 +2774,75 @@ async function kataGoThink() {
     showToast('🤖 KataGo 出错，请稍候…', 1500);
     aiTurnTimer = setTimeout(kataGoThink, 1500); // 出错后重试
   }
+}
+
+// 按难度选点
+var _diffNames = ['入门', '简单', '普通', '困难', '高手'];
+
+async function kataGoPick(legal) {
+  var d = aiDifficulty || 3;
+
+  // 入门：随机合法点
+  if (d <= 1) {
+    return legal[Math.floor(Math.random() * legal.length)];
+  }
+
+  // 网络评估（policy logits + 胜率）
+  var ev = await window.KataEngine.evaluatePosition(stoneMap, moves, currentColor, 7.5);
+
+  // 简单/普通：温度采样（温度高 → 更随机 → 更弱）
+  if (d <= 3) {
+    var T = d === 2 ? 3.0 : 1.0;
+    return softmaxSample(ev.policy, legal, T);
+  }
+
+  // 困难：policy 贪心（选概率最高）
+  if (d === 4) {
+    var best = legal[0], bestL = -Infinity;
+    for (var i = 0; i < legal.length; i++) {
+      var l = ev.policy[legal[i].y * SZ + legal[i].x];
+      if (l > bestL) { bestL = l; best = legal[i]; }
+    }
+    return best;
+  }
+
+  // 高手：1-ply value 评估（对 top-6 候选落子后网络评估，选最有利）
+  var cand = legal.slice().sort(function(a, b) {
+    return ev.policy[b.y * SZ + b.x] - ev.policy[a.y * SZ + a.x];
+  }).slice(0, 6);
+  var opp = currentColor === 'B' ? 'W' : 'B';
+  var best2 = cand[0], bestScore = Infinity;
+  for (var j = 0; j < cand.length; j++) {
+    var nm = new Map(stoneMap), nmv = moves.slice();
+    var r = placeStone(cand[j].x, cand[j].y, nm, nmv, currentIdx, koPoint);
+    if (!r.success) continue;
+    try {
+      var e2 = await window.KataEngine.evaluatePosition(nm, nmv, opp, 7.5);
+      if (e2.winRate < bestScore) { bestScore = e2.winRate; best2 = cand[j]; }
+    } catch (e) { /* 忽略异常候选 */ }
+  }
+  return best2;
+}
+
+// policy softmax 温度采样
+function softmaxSample(policyLogits, legal, T) {
+  var maxL = -Infinity;
+  for (var i = 0; i < legal.length; i++) {
+    var l = policyLogits[legal[i].y * SZ + legal[i].x];
+    if (l > maxL) maxL = l;
+  }
+  var sum = 0;
+  var probs = new Float32Array(legal.length);
+  for (var j = 0; j < legal.length; j++) {
+    probs[j] = Math.exp((policyLogits[legal[j].y * SZ + legal[j].x] - maxL) / T);
+    sum += probs[j];
+  }
+  var r = Math.random() * sum;
+  for (var k = 0; k < legal.length; k++) {
+    r -= probs[k];
+    if (r <= 0) return legal[k];
+  }
+  return legal[legal.length - 1];
 }
 
 function doRequestCounting() {
